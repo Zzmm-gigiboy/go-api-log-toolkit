@@ -1,0 +1,4 @@
+{"route":"/health","status":200,"duration_ms":4}
+{"route":"/api/products","status":200,"duration_ms":35}
+{"route":"/api/products","status":500,"duration_ms":88}
+{"route":"/api/products","status":200,"duration_ms":41}
