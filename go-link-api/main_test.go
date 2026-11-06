@@ -565,3 +565,60 @@ func TestStoreConcurrency(t *testing.T) {
 		t.Fatalf("expected store.next to have incremented, got %d", store.next)
 	}
 }
+
+func TestGetLinkByIDAndTagSanitization(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "links.json")
+	h := newStore(path).handler()
+
+	// 1. Post a link with duplicate and empty tags
+	payload := `{"title":"  Go Blog  ","url":"  https://go.dev/blog/  ","tags":["dev","  dev  ","","golang","golang"]}`
+	req := httptest.NewRequest("POST", "/api/links", bytes.NewReader([]byte(payload)))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 201 {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body)
+	}
+
+	var created Link
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if created.Title != "Go Blog" {
+		t.Errorf("expected trimmed title 'Go Blog', got %q", created.Title)
+	}
+	if created.URL != "https://go.dev/blog/" {
+		t.Errorf("expected trimmed URL, got %q", created.URL)
+	}
+	if len(created.Tags) != 2 || created.Tags[0] != "dev" || created.Tags[1] != "golang" {
+		t.Errorf("expected sanitized tags ['dev', 'golang'], got %v", created.Tags)
+	}
+
+	// 2. GET by valid ID
+	getReq := httptest.NewRequest("GET", fmt.Sprintf("/api/links/%d", created.ID), nil)
+	getRec := httptest.NewRecorder()
+	h.ServeHTTP(getRec, getReq)
+	if getRec.Code != 200 {
+		t.Fatalf("expected 200 for GET by ID, got %d", getRec.Code)
+	}
+	var fetched Link
+	if err := json.Unmarshal(getRec.Body.Bytes(), &fetched); err != nil || fetched.ID != created.ID {
+		t.Fatalf("fetched link mismatch: %v", fetched)
+	}
+
+	// 3. GET by non-existent ID -> 404
+	get404Req := httptest.NewRequest("GET", "/api/links/9999", nil)
+	get404Rec := httptest.NewRecorder()
+	h.ServeHTTP(get404Rec, get404Req)
+	if get404Rec.Code != 404 {
+		t.Errorf("expected 404, got %d", get404Rec.Code)
+	}
+
+	// 4. GET by invalid/negative ID -> 400
+	get400Req := httptest.NewRequest("GET", "/api/links/-1", nil)
+	get400Rec := httptest.NewRecorder()
+	h.ServeHTTP(get400Rec, get400Req)
+	if get400Rec.Code != 400 {
+		t.Errorf("expected 400 for negative ID, got %d", get400Rec.Code)
+	}
+}
+

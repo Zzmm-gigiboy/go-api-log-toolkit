@@ -20,6 +20,7 @@ type Link struct {
 	URL   string   `json:"url"`
 	Tags  []string `json:"tags"`
 }
+
 type Store struct {
 	mu    sync.Mutex
 	links []Link
@@ -43,6 +44,7 @@ func newStore(path string) *Store {
 	}
 	return s
 }
+
 func (s *Store) persist() error {
 	if s.path == "" {
 		return nil
@@ -51,8 +53,14 @@ func (s *Store) persist() error {
 	if e != nil {
 		return e
 	}
-	return os.WriteFile(s.path, b, 0600)
+	// Atomic write using a temporary file and rename
+	tmp := s.path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, s.path)
 }
+
 func jsonResponse(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -60,9 +68,12 @@ func jsonResponse(w http.ResponseWriter, status int, v any) {
 		_ = json.NewEncoder(w).Encode(v)
 	}
 }
+
 func (s *Store) handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) { jsonResponse(w, 200, map[string]string{"status": "ok"}) })
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+		jsonResponse(w, 200, map[string]string{"status": "ok"})
+	})
 	mux.HandleFunc("GET /api/links", func(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
@@ -73,8 +84,26 @@ func (s *Store) handler() http.Handler {
 				res = append(res, l)
 			}
 		}
-		sort.Slice(res, func(i, j int) bool { return strings.ToLower(res[i].Title) < strings.ToLower(res[j].Title) })
+		sort.Slice(res, func(i, j int) bool {
+			return strings.ToLower(res[i].Title) < strings.ToLower(res[j].Title)
+		})
 		jsonResponse(w, 200, res)
+	})
+	mux.HandleFunc("GET /api/links/{id}", func(w http.ResponseWriter, r *http.Request) {
+		id, e := strconv.Atoi(r.PathValue("id"))
+		if e != nil || id <= 0 {
+			jsonResponse(w, 400, map[string]string{"error": "Invalid id"})
+			return
+		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		for _, l := range s.links {
+			if l.ID == id {
+				jsonResponse(w, 200, l)
+				return
+			}
+		}
+		jsonResponse(w, 404, map[string]string{"error": "Not found"})
 	})
 	mux.HandleFunc("POST /api/links", func(w http.ResponseWriter, r *http.Request) {
 		defer r.Body.Close()
@@ -84,16 +113,30 @@ func (s *Store) handler() http.Handler {
 			jsonResponse(w, 400, map[string]string{"error": "Invalid JSON"})
 			return
 		}
+		l.URL = strings.TrimSpace(l.URL)
+		l.Title = strings.TrimSpace(l.Title)
 		parsed, e := url.ParseRequestURI(l.URL)
-		if e != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") || strings.TrimSpace(l.Title) == "" || len(l.Title) > 120 || len(l.Tags) > 10 {
+		if e != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") || l.Title == "" || len(l.Title) > 120 || len(l.Tags) > 10 {
 			jsonResponse(w, 422, map[string]string{"error": "Invalid title, URL, or tags"})
 			return
 		}
+
+		// Sanitize and deduplicate tags
+		cleanTags := []string{}
+		seenTags := make(map[string]bool)
+		for _, t := range l.Tags {
+			trimmed := strings.TrimSpace(t)
+			if trimmed != "" && len(trimmed) <= 30 && !seenTags[trimmed] {
+				cleanTags = append(cleanTags, trimmed)
+				seenTags[trimmed] = true
+			}
+		}
+		l.Tags = cleanTags
+
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		l.ID = s.next
 		s.next++
-		l.Title = strings.TrimSpace(l.Title)
 		s.links = append(s.links, l)
 		if e := s.persist(); e != nil {
 			s.links = s.links[:len(s.links)-1]
@@ -105,7 +148,7 @@ func (s *Store) handler() http.Handler {
 	})
 	mux.HandleFunc("DELETE /api/links/{id}", func(w http.ResponseWriter, r *http.Request) {
 		id, e := strconv.Atoi(r.PathValue("id"))
-		if e != nil {
+		if e != nil || id <= 0 {
 			jsonResponse(w, 400, map[string]string{"error": "Invalid id"})
 			return
 		}
@@ -133,6 +176,7 @@ func (s *Store) handler() http.Handler {
 	})
 	return mux
 }
+
 func run() error {
 	path := os.Getenv("LINK_STORE_FILE")
 	s := newStore(path)
@@ -143,6 +187,7 @@ func run() error {
 	fmt.Printf("Link API on :%s\n", port)
 	return http.ListenAndServe(":"+port, s.handler())
 }
+
 func main() {
 	if err := run(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
