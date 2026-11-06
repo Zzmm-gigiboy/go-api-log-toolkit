@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strings"
 )
 
 type Event struct {
@@ -23,6 +24,10 @@ type Metrics struct {
 
 func analyze(in io.Reader) ([]Metrics, error) {
 	scanner := bufio.NewScanner(in)
+	// Support large JSON payloads and long stack traces up to 1MB per line
+	buf := make([]byte, 64*1024)
+	scanner.Buffer(buf, 1024*1024)
+
 	type agg struct {
 		count, errors int
 		sum           float64
@@ -39,6 +44,7 @@ func analyze(in io.Reader) ([]Metrics, error) {
 		if err := json.Unmarshal(data, &e); err != nil {
 			return nil, fmt.Errorf("line %d: %w", line, err)
 		}
+		e.Route = strings.TrimSpace(e.Route)
 		if e.Route == "" || e.DurationMs < 0 || e.Status < 100 || e.Status > 599 {
 			return nil, fmt.Errorf("line %d: invalid event", line)
 		}

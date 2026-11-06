@@ -275,9 +275,8 @@ func TestLargeLogStreams(t *testing.T) {
 }
 
 func TestMaxScanTokenSizeHandling(t *testing.T) {
-	t.Run("Line exceeding bufio.MaxScanTokenSize returns ErrTooLong", func(t *testing.T) {
-		// bufio.MaxScanTokenSize is 64 * 1024 = 65536 bytes
-		hugeRoute := "/" + strings.Repeat("a", bufio.MaxScanTokenSize+100)
+	t.Run("Line exceeding 1MB buffer returns ErrTooLong", func(t *testing.T) {
+		hugeRoute := "/" + strings.Repeat("a", 1024*1024+100)
 		hugeLine := fmt.Sprintf(`{"route":"%s","status":200,"duration_ms":10}`, hugeRoute)
 
 		_, err := analyze(strings.NewReader(hugeLine))
@@ -286,6 +285,19 @@ func TestMaxScanTokenSizeHandling(t *testing.T) {
 		}
 		if !errors.Is(err, bufio.ErrTooLong) {
 			t.Fatalf("expected bufio.ErrTooLong, got %v", err)
+		}
+	})
+
+	t.Run("Line exceeding standard 64KB but within 1MB succeeds", func(t *testing.T) {
+		largeRoute := "/" + strings.Repeat("b", 100000) // 100KB line
+		line := fmt.Sprintf(`{"route":"%s","status":200,"duration_ms":25}`, largeRoute)
+
+		results, err := analyze(strings.NewReader(line))
+		if err != nil {
+			t.Fatalf("unexpected error for 100KB line: %v", err)
+		}
+		if len(results) != 1 || results[0].Route != largeRoute {
+			t.Fatalf("failed to aggregate 100KB line")
 		}
 	})
 
